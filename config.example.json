@@ -1,0 +1,11 @@
+{
+  "refresh_interval_seconds": 60,
+  "provider": "realtime",
+  "notifications_enabled": true,
+  "notify_on_refresh": false,
+  "start_on_login": false,
+  "low_quota_alerts_enabled": true,
+  "auth_json_path": "C:/Users/YOUR_NAME/.codex/auth.json",
+  "five_hour_limit": 30000000,
+  "weekly_limit": 1000000000
+}
