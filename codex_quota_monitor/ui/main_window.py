@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -23,7 +23,7 @@ from codex_quota_monitor.core.refresh import RefreshService
 from codex_quota_monitor.data_sources.chatgpt_wham import ChatGPTWhamUsageProvider
 from codex_quota_monitor.data_sources.mock_provider import MockUsageProvider
 from codex_quota_monitor.notifications.notifier import Notifier
-from codex_quota_monitor.ui.tray import TrayController
+from codex_quota_monitor.ui.tray import TrayController, create_app_icon
 
 
 def _fmt_clock(value) -> str:
@@ -100,14 +100,37 @@ class ActionLine(QFrame):
         self.right_label.setText(self.right_text.replace("›", "").strip())
 
 
+class RefreshTaskSignals(QObject):
+    finished = Signal(object)
+
+
+class RefreshTask(QRunnable):
+    def __init__(self, service: RefreshService) -> None:
+        super().__init__()
+        self.service = service
+        self.signals = RefreshTaskSignals()
+
+    def run(self) -> None:
+        self.signals.finished.emit(self.service.refresh())
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, settings_store: SettingsStore | None = None) -> None:
+    def __init__(
+        self,
+        settings_store: SettingsStore | None = None,
+        thread_pool: QThreadPool | None = None,
+        auto_refresh: bool = True,
+    ) -> None:
         super().__init__()
         self.settings_store = settings_store or SettingsStore()
         self.credential_store = CredentialStore()
         self.settings = self.settings_store.load()
         self.service = RefreshService(self._make_provider())
+        self.thread_pool = thread_pool or QThreadPool.globalInstance()
+        self.refresh_in_progress = False
+        self._refresh_tasks: list[RefreshTask] = []
         self.setWindowTitle("Codex 剩余用量")
+        self.setWindowIcon(create_app_icon())
         self.setFixedWidth(445)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_now)
@@ -116,7 +139,8 @@ class MainWindow(QMainWindow):
         self.notifier = Notifier(self.tray.icon)
         self._apply_styles()
         self._apply_timer()
-        self.refresh_now()
+        if auto_refresh:
+            self.refresh_now()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -217,7 +241,20 @@ class MainWindow(QMainWindow):
         self.collapse_button.setText("⌃" if visible else "⌄")
 
     def refresh_now(self) -> None:
-        snapshot = self.service.refresh()
+        if self.refresh_in_progress:
+            return
+        self.refresh_in_progress = True
+        if self.status_label.text() == "":
+            self.status_label.setText("正在刷新...")
+        task = RefreshTask(self.service)
+        self._refresh_tasks.append(task)
+        task.signals.finished.connect(lambda snapshot, finished_task=task: self._finish_refresh(snapshot, finished_task))
+        self.thread_pool.start(task)
+
+    def _finish_refresh(self, snapshot: UsageSnapshot, task: RefreshTask | None = None) -> None:
+        self.refresh_in_progress = False
+        if task in self._refresh_tasks:
+            self._refresh_tasks.remove(task)
         self._render_snapshot(snapshot)
         self.tray.update_snapshot(snapshot)
         if snapshot.error_message:
@@ -294,6 +331,7 @@ class MainWindow(QMainWindow):
 
 def run_app() -> int:
     app = QApplication([])
+    app.setWindowIcon(create_app_icon())
     QApplication.setQuitOnLastWindowClosed(False)
     window = MainWindow()
     window.show()

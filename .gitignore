@@ -17,3 +17,5 @@ dist/
 config.json
 
 CodexQuotaMonitor.spec
+
+.superpowers/
