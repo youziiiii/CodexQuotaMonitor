@@ -120,7 +120,7 @@ class QuotaPopup(QFrame):
         top = QHBoxLayout()
         self.title_label = QLabel("5 小时剩余")
         self.title_label.setObjectName("popupTitle")
-        self.percent_label = QLabel("--%")
+        self.percent_label = QLabel("--")
         self.percent_label.setObjectName("popupPercent")
         self.percent_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         top.addWidget(self.title_label)
@@ -140,6 +140,11 @@ class QuotaPopup(QFrame):
         self.week_refresh_label = QLabel("周刷新 --")
         self.week_refresh_label.setObjectName("popupWeek")
 
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("popupStatus")
+        self.status_label.setWordWrap(True)
+        self.status_label.hide()
+
         self.refresh_button = QPushButton("立即刷新")
         self.refresh_button.setObjectName("popupRefreshButton")
         self.refresh_button.clicked.connect(self._refresh_clicked)
@@ -149,25 +154,35 @@ class QuotaPopup(QFrame):
         layout.addWidget(self.refresh_label)
         layout.addWidget(self.week_percent_label)
         layout.addWidget(self.week_refresh_label)
+        layout.addWidget(self.status_label)
         layout.addWidget(self.refresh_button)
         self._apply_styles()
 
     def update_snapshot(self, snapshot: UsageSnapshot) -> None:
         percent = snapshot.five_hour.percent_remaining
-        self.percent_label.setText(f"{percent}%")
-        self.progress.setValue(percent)
+        self.percent_label.setText("--" if percent is None else f"{percent}%")
+        self.progress.setValue(0 if percent is None else percent)
         self.refresh_label.setText(f"刷新时间 {_format_reset_clock(snapshot)}")
-        self.week_percent_label.setText(f"本周剩余 {snapshot.weekly.percent_remaining}%")
+        week_percent = snapshot.weekly.percent_remaining
+        week_text = "--" if week_percent is None else f"{week_percent}%"
+        self.week_percent_label.setText(f"本周剩余 {week_text}")
         self.week_refresh_label.setText(f"周刷新 {_format_reset_date_time(snapshot.weekly.reset_time)}")
-        state = "normal"
-        if percent < 10:
+        state = "unknown" if percent is None else "normal"
+        if percent is not None and percent < 10:
             state = "critical"
-        elif percent < 20:
+        elif percent is not None and percent < 20:
             state = "warning"
         for widget in (self.percent_label, self.progress):
             widget.setProperty("quotaState", state)
             widget.style().unpolish(widget)
             widget.style().polish(widget)
+
+    def set_status(self, message: str, error: bool = False) -> None:
+        self.status_label.setText(message)
+        self.status_label.setProperty("statusType", "error" if error else "warning")
+        self.status_label.setVisible(bool(message))
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -193,6 +208,7 @@ class QuotaPopup(QFrame):
             }
             #popupPercent[quotaState="warning"] { color: #f6c453; }
             #popupPercent[quotaState="critical"] { color: #ff5c5c; }
+            #popupPercent[quotaState="unknown"] { color: #a1a1aa; }
             #popupRefresh {
                 color: #b8bcc6;
                 font-size: 9pt;
@@ -201,6 +217,11 @@ class QuotaPopup(QFrame):
                 color: #d6dae3;
                 font-size: 9pt;
             }
+            #popupStatus {
+                color: #f6c453;
+                font-size: 8.5pt;
+            }
+            #popupStatus[statusType="error"] { color: #ff7b72; }
             #popupRefreshButton {
                 background: #34363a;
                 border: 1px solid #4b5563;
@@ -239,36 +260,44 @@ class TrayController(QObject):
     def __init__(self, window) -> None:
         super().__init__(window)
         self.window = window
+        self._shutdown = False
         app = QApplication.instance()
         self.app = app
         self.icon = QSystemTrayIcon(create_quota_icon(), window)
         self.popup = QuotaPopup(on_refresh=window.refresh_now)
-        menu = QMenu()
-        show_action = QAction("显示主窗口", menu)
+        self.menu = QMenu()
+        show_action = QAction("显示主窗口", self.menu)
         show_action.triggered.connect(self._show_window)
-        refresh_action = QAction("立即刷新", menu)
+        refresh_action = QAction("立即刷新", self.menu)
         refresh_action.triggered.connect(window.refresh_now)
-        quit_action = QAction("退出", menu)
-        quit_action.triggered.connect(app.quit)
-        menu.addAction(show_action)
-        menu.addAction(refresh_action)
-        menu.addSeparator()
-        menu.addAction(quit_action)
-        self.icon.setContextMenu(menu)
+        quit_action = QAction("退出", self.menu)
+        quit_action.triggered.connect(getattr(window, "quit_app", app.quit))
+        self.menu.addAction(show_action)
+        self.menu.addAction(refresh_action)
+        self.menu.addSeparator()
+        self.menu.addAction(quit_action)
+        self.icon.setContextMenu(self.menu)
         self.icon.activated.connect(self._activated)
         self.icon.show()
         self.app.installEventFilter(self)
 
     def update_snapshot(self, snapshot: UsageSnapshot) -> None:
         self.popup.update_snapshot(snapshot)
-        self.icon.setIcon(create_quota_icon(snapshot.five_hour.percent_remaining))
+        five_percent = snapshot.five_hour.percent_remaining
+        week_percent = snapshot.weekly.percent_remaining
+        self.icon.setIcon(create_quota_icon(five_percent))
         reset_clock = _format_reset_clock(snapshot)
+        five_text = "--" if five_percent is None else f"{five_percent}%"
+        week_text = "--" if week_percent is None else f"{week_percent}%"
         self.icon.setToolTip(
             "Codex 实时额度\n"
-            f"5 小时剩余：{snapshot.five_hour.percent_remaining}%\n"
+            f"5 小时剩余：{five_text}\n"
             f"刷新时间：{reset_clock}\n"
-            f"本周剩余：{snapshot.weekly.percent_remaining}%"
+            f"本周剩余：{week_text}"
         )
+
+    def set_status(self, message: str, error: bool = False) -> None:
+        self.popup.set_status(message, error)
 
     def _activated(self, reason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -301,6 +330,22 @@ class TrayController(QObject):
         self.window.show()
         self.window.raise_()
         self.window.activateWindow()
+
+    def show_window(self) -> None:
+        self._show_window()
+
+    def shutdown(self) -> None:
+        if self._shutdown:
+            return
+        self._shutdown = True
+        if self.app is not None:
+            self.app.removeEventFilter(self)
+        self.popup.hide()
+        self.icon.hide()
+        self.icon.setContextMenu(None)
+        self.popup.close()
+        self.popup.deleteLater()
+        self.menu.deleteLater()
 
     def eventFilter(self, obj, event) -> bool:
         if (

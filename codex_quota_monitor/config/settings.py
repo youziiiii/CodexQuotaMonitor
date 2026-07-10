@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 
 
 DEFAULT_CONFIG_PATH = Path.home() / "AppData" / "Roaming" / "CodexQuotaMonitor" / "config.json"
+VALID_REFRESH_INTERVALS = {30, 60, 300, 900}
 
 
 @dataclass
@@ -13,43 +16,65 @@ class AppSettings:
     refresh_interval_seconds: int = 60
     provider: str = "realtime"
     notifications_enabled: bool = True
-    notify_on_refresh: bool = False
     start_on_login: bool = False
     low_quota_alerts_enabled: bool = True
     auth_json_path: str = str(Path.home() / ".codex" / "auth.json")
-    five_hour_limit: int = 30_000_000
-    weekly_limit: int = 1_000_000_000
-    account_display_name: str = "先森 罗"
-    account_plan: str = "Plus"
-    avatar_number: int = 33
 
 
 class SettingsStore:
     def __init__(self, path: str | Path = DEFAULT_CONFIG_PATH) -> None:
         self.path = Path(path)
+        self.last_invalid_backup_path: Path | None = None
 
     def load(self) -> AppSettings:
         if not self.path.exists():
             return AppSettings()
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return AppSettings()
-        allowed = {field.name for field in AppSettings.__dataclass_fields__.values()}
-        filtered = {key: value for key, value in data.items() if key in allowed}
-        filtered.pop("api_key", None)
-        filtered.pop("token", None)
-        if filtered.get("provider") not in {"realtime", "mock"}:
-            filtered["provider"] = "realtime"
-        if filtered.get("five_hour_limit") in {200_000, 12_000_000}:
-            filtered["five_hour_limit"] = 30_000_000
-        if filtered.get("weekly_limit") == 2_000_000:
-            filtered["weekly_limit"] = 1_000_000_000
-        return AppSettings(**filtered)
+            return self._validate(data)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return self._backup_and_restore_defaults()
 
-    def save(self, settings: AppSettings, transient_secret: str | None = None) -> None:
+    def save(self, settings: AppSettings) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = asdict(settings)
-        data.pop("api_key", None)
-        data.pop("token", None)
-        self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        temporary_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        temporary_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary_path.replace(self.path)
+
+    def _validate(self, data: object) -> AppSettings:
+        if not isinstance(data, dict):
+            raise TypeError("config root must be an object")
+
+        allowed = {field.name for field in AppSettings.__dataclass_fields__.values()}
+        filtered = {key: value for key, value in data.items() if key in allowed}
+        interval = filtered.get("refresh_interval_seconds", 60)
+        if type(interval) is not int or interval not in VALID_REFRESH_INTERVALS:
+            raise ValueError("invalid refresh_interval_seconds")
+        provider = filtered.get("provider", "realtime")
+        if provider not in {"realtime", "mock"}:
+            raise ValueError("invalid provider")
+        for name in ("notifications_enabled", "start_on_login", "low_quota_alerts_enabled"):
+            if name in filtered and type(filtered[name]) is not bool:
+                raise TypeError(f"invalid {name}")
+        auth_path = filtered.get("auth_json_path", AppSettings().auth_json_path)
+        if not isinstance(auth_path, str) or not auth_path.strip():
+            raise TypeError("invalid auth_json_path")
+        return AppSettings(**filtered)
+
+    def _backup_and_restore_defaults(self) -> AppSettings:
+        settings = AppSettings()
+        if self.path.exists():
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            backup = self.path.with_name(f"{self.path.stem}.invalid-{timestamp}{self.path.suffix}")
+            try:
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(self.path, backup)
+                self.last_invalid_backup_path = backup
+            except OSError:
+                self.last_invalid_backup_path = None
+        try:
+            self.save(settings)
+        except OSError:
+            pass
+        return settings

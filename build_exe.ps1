@@ -8,7 +8,7 @@ chcp.com 65001 | Out-Null
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectRoot
 
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 python -m PyInstaller `
   --noconfirm `
   --clean `

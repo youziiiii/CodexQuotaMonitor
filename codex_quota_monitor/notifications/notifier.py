@@ -8,6 +8,7 @@ class Notifier:
     def __init__(self, tray_icon=None) -> None:
         self.tray_icon = tray_icon
         self._last_alert_key: str | None = None
+        self._error_active = False
 
     def show(self, title: str, message: str) -> None:
         if self.tray_icon is not None and self.tray_icon.supportsMessages():
@@ -34,5 +35,9 @@ class Notifier:
         )
 
     def alert_error(self, snapshot: UsageSnapshot, enabled: bool) -> None:
-        if enabled and snapshot.error_message:
+        if enabled and snapshot.error_message and not self._error_active:
+            self._error_active = True
             self.show("Codex 额度刷新失败", snapshot.error_message)
+
+    def clear_error(self) -> None:
+        self._error_active = False

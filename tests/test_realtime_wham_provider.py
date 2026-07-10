@@ -60,3 +60,51 @@ def test_wham_provider_missing_auth_returns_visible_error(tmp_path):
 
     assert snapshot.error_message is not None
     assert "auth.json" in snapshot.error_message
+    assert snapshot.five_hour.percent_remaining is None
+
+
+def test_credits_failure_keeps_last_count_and_updates_quota(tmp_path):
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"tokens":{"access_token":"test-token"}}', encoding="utf-8")
+    credit_calls = 0
+    used_percent = 20
+
+    def fake_get(url, headers):
+        nonlocal credit_calls
+        if url.endswith("/usage"):
+            return {
+                "rate_limit": {
+                    "primary_window": {"used_percent": used_percent},
+                    "secondary_window": {"used_percent": 30},
+                }
+            }
+        credit_calls += 1
+        if credit_calls == 1:
+            return {"available_count": 3}
+        raise TimeoutError("credits timeout")
+
+    provider = ChatGPTWhamUsageProvider(auth_path=str(auth), get_json=fake_get)
+    first = provider.fetch()
+    used_percent = 35
+    second = provider.fetch()
+
+    assert first.metadata["available_resets"] == "3"
+    assert second.five_hour.percent_remaining == 65
+    assert second.metadata["available_resets"] == "3"
+    assert second.error_message is None
+    assert second.warning_message == "重置次数刷新失败：credits timeout"
+
+
+def test_missing_usage_windows_are_reported_as_unknown_refresh_error(tmp_path):
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"tokens":{"access_token":"test-token"}}', encoding="utf-8")
+    provider = ChatGPTWhamUsageProvider(
+        auth_path=str(auth),
+        get_json=lambda url, headers: {"rate_limit": {}} if url.endswith("/usage") else {},
+    )
+
+    snapshot = provider.fetch()
+
+    assert snapshot.error_message is not None
+    assert "缺少有效" in snapshot.error_message
+    assert snapshot.five_hour.percent_remaining is None

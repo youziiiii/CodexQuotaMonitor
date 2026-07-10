@@ -24,6 +24,7 @@ class ChatGPTWhamUsageProvider(UsageProvider):
     ) -> None:
         self.auth_path = auth_path or str(Path.home() / ".codex" / "auth.json")
         self.get_json = get_json or _url_get_json
+        self._last_available_resets: int | None = None
 
     def fetch(self, now: datetime | None = None) -> UsageSnapshot:
         now = now or datetime.now(timezone.utc)
@@ -37,8 +38,27 @@ class ChatGPTWhamUsageProvider(UsageProvider):
             auth = self._load_auth()
             headers = _headers_from_auth(auth)
             usage = self.get_json(USAGE_URL, headers)
-            credits = self.get_json(CREDITS_URL, headers)
-            return _snapshot_from_usage(source, usage, credits, now)
+            available_resets = _available_resets(usage, {})
+            warning_message = None
+            try:
+                credits = self.get_json(CREDITS_URL, headers)
+                credits_resets = _available_resets({}, credits)
+                if credits_resets is not None:
+                    available_resets = credits_resets
+            except Exception as exc:
+                if self._last_available_resets is not None:
+                    available_resets = self._last_available_resets
+                warning_message = f"重置次数刷新失败：{redact_secret(exc)}"
+
+            if available_resets is not None:
+                self._last_available_resets = available_resets
+            return _snapshot_from_usage(
+                source,
+                usage,
+                now,
+                available_resets=available_resets,
+                warning_message=warning_message,
+            )
         except Exception as exc:
             return empty_snapshot(source, now, f"实时额度读取失败：{redact_secret(exc)}")
 
@@ -75,21 +95,24 @@ def _url_get_json(url: str, headers: dict[str, str]) -> dict[str, Any]:
 def _snapshot_from_usage(
     source: UsageSource,
     usage: dict[str, Any],
-    credits: dict[str, Any],
     now: datetime,
+    available_resets: int | None = None,
+    warning_message: str | None = None,
 ) -> UsageSnapshot:
     rate_limit = usage.get("rate_limit") or usage.get("rateLimits") or {}
     primary = _normalize_limit(rate_limit.get("primary_window") or rate_limit.get("primary"), 18_000)
     secondary = _normalize_limit(rate_limit.get("secondary_window") or rate_limit.get("secondary"), 604_800)
-    available_resets = _available_resets(usage, credits)
+    if primary.percent_remaining is None or secondary.percent_remaining is None:
+        raise ValueError("额度接口缺少有效的 5 小时或周窗口数据")
     return UsageSnapshot(
         source=source,
         total_used_units=primary.used_units + secondary.used_units,
         five_hour=primary,
         weekly=secondary,
         last_refresh=now,
+        warning_message=warning_message,
         metadata={
-            "available_resets": str(available_resets),
+            "available_resets": "--" if available_resets is None else str(available_resets),
             "unit": "实时额度",
             "plan_type": str(usage.get("plan_type") or ""),
             "allowed": str((usage.get("rate_limit") or {}).get("allowed", "")),
@@ -100,12 +123,14 @@ def _snapshot_from_usage(
 def _normalize_limit(value: Any, expected_seconds: int) -> UsageWindow:
     label = "5 小时" if expected_seconds == 18_000 else "1 周"
     if not isinstance(value, dict):
-        return UsageWindow(label, 0, 100, 0, None)
-    used_percent = value.get("used_percent", value.get("usedPercent", 100))
+        return UsageWindow(label, 0, 0, 0, None)
+    used_percent = value.get("used_percent", value.get("usedPercent"))
+    if used_percent is None:
+        return UsageWindow(label, 0, 0, 0, _reset_time(value))
     try:
         used = int(round(float(used_percent)))
     except (TypeError, ValueError):
-        used = 100
+        return UsageWindow(label, 0, 0, 0, _reset_time(value))
     used = max(0, min(100, used))
     reset_time = _reset_time(value)
     return UsageWindow(label, used, 100, 100 - used, reset_time)
@@ -121,10 +146,10 @@ def _reset_time(value: dict[str, Any]) -> datetime | None:
         return None
 
 
-def _available_resets(usage: dict[str, Any], credits: dict[str, Any]) -> int:
+def _available_resets(usage: dict[str, Any], credits: dict[str, Any]) -> int | None:
     usage_count = (usage.get("rate_limit_reset_credits") or {}).get("available_count")
     credits_count = credits.get("available_count")
     for value in (usage_count, credits_count):
-        if isinstance(value, int):
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return value
-    return 0
+    return None

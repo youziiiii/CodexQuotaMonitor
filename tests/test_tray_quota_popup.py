@@ -5,7 +5,7 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication, QStyle
 from PySide6.QtWidgets import QWidget
 
-from codex_quota_monitor.core.models import UsageSnapshot, UsageSource, UsageWindow
+from codex_quota_monitor.core.models import UsageSnapshot, UsageSource, UsageWindow, empty_snapshot
 from codex_quota_monitor.ui.tray import QuotaPopup, TrayController, _quota_icon_text
 
 
@@ -37,6 +37,8 @@ def test_quota_popup_shows_five_hour_remaining_and_reset_time():
     assert popup.percent_label.text() == "61%"
     assert popup.refresh_label.text().startswith("刷新时间 ")
     assert "--" not in popup.refresh_label.text()
+    popup.close()
+    popup.deleteLater()
 
 
 def test_quota_popup_shows_weekly_remaining_and_weekly_reset_date_time():
@@ -50,6 +52,8 @@ def test_quota_popup_shows_weekly_remaining_and_weekly_reset_date_time():
     assert popup.week_refresh_label.text().startswith("周刷新 ")
     assert "7月" in popup.week_refresh_label.text()
     assert "02:00" in popup.week_refresh_label.text()
+    popup.close()
+    popup.deleteLater()
 
 
 def test_tray_icon_text_is_only_five_hour_remaining_number():
@@ -67,6 +71,7 @@ def test_quota_popup_hides_when_window_deactivates():
     QApplication.sendEvent(popup, QEvent(QEvent.Type.WindowDeactivate))
 
     assert popup.isVisible() is False
+    popup.deleteLater()
 
 
 def test_quota_popup_refresh_button_triggers_callback():
@@ -78,6 +83,36 @@ def test_quota_popup_refresh_button_triggers_callback():
 
     assert app is not None
     assert calls == ["refresh"]
+    popup.close()
+    popup.deleteLater()
+
+
+def test_quota_popup_can_show_refresh_failure_duration():
+    app = QApplication.instance() or QApplication([])
+    popup = QuotaPopup()
+
+    popup.set_status("刷新失败，已持续 2 分钟：network failed", error=True)
+
+    assert app is not None
+    assert popup.status_label.isHidden() is False
+    assert "已持续 2 分钟" in popup.status_label.text()
+    assert popup.status_label.property("statusType") == "error"
+    popup.close()
+    popup.deleteLater()
+
+
+def test_quota_popup_shows_unknown_instead_of_zero_for_refresh_error():
+    app = QApplication.instance() or QApplication([])
+    popup = QuotaPopup()
+    source = UsageSource("刷新错误", "error", True, "test")
+
+    popup.update_snapshot(empty_snapshot(source, datetime.now(timezone.utc), "network failed"))
+
+    assert app is not None
+    assert popup.percent_label.text() == "--"
+    assert popup.week_percent_label.text() == "本周剩余 --"
+    popup.close()
+    popup.deleteLater()
 
 
 def test_tray_tooltip_uses_percentages_for_realtime_windows():
@@ -95,6 +130,7 @@ def test_tray_tooltip_uses_percentages_for_realtime_windows():
     assert app is not None
     assert "5 小时剩余：61%" in tray.icon.toolTip()
     assert "本周剩余：68%" in tray.icon.toolTip()
+    tray.shutdown()
 
 
 def test_tray_icon_is_not_the_system_computer_icon():
@@ -108,6 +144,7 @@ def test_tray_icon_is_not_the_system_computer_icon():
     system_icon_key = app.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon).cacheKey()
 
     assert tray.icon.icon().cacheKey() != system_icon_key
+    tray.shutdown()
 
 
 def test_tray_icon_updates_when_snapshot_changes():
@@ -124,6 +161,7 @@ def test_tray_icon_updates_when_snapshot_changes():
 
     assert app is not None
     assert tray.icon.icon().cacheKey() != before
+    tray.shutdown()
 
 
 def test_tray_controller_hides_popup_when_clicking_outside_popup():
@@ -149,3 +187,4 @@ def test_tray_controller_hides_popup_when_clicking_outside_popup():
     tray.eventFilter(outside, click)
 
     assert tray.popup.isVisible() is False
+    tray.shutdown()

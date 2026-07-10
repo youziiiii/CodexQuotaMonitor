@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-and-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install locked dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Build application
+        shell: powershell
+        run: .\build_exe.ps1
+      - name: Smoke test executable
+        shell: powershell
+        run: |
+          $process = Start-Process ".\dist\CodexQuotaMonitor\CodexQuotaMonitor.exe" -PassThru
+          Start-Sleep -Seconds 5
+          if ($process.HasExited) {
+            throw "CodexQuotaMonitor.exe exited during smoke test with code $($process.ExitCode)"
+          }
+          Stop-Process -Id $process.Id -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CodexQuotaMonitor-win64
+          path: dist/CodexQuotaMonitor

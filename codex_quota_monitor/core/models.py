@@ -21,15 +21,15 @@ class UsageWindow:
     reset_time: datetime | None
 
     @property
-    def percent_used(self) -> int:
+    def percent_used(self) -> int | None:
         if self.limit_units <= 0:
-            return 0
+            return None
         return max(0, min(100, round(self.used_units / self.limit_units * 100)))
 
     @property
-    def percent_remaining(self) -> int:
+    def percent_remaining(self) -> int | None:
         if self.limit_units <= 0:
-            return 0
+            return None
         return max(0, min(100, round(self.remaining_units / self.limit_units * 100)))
 
 
@@ -41,6 +41,7 @@ class UsageSnapshot:
     weekly: UsageWindow
     last_refresh: datetime
     error_message: str | None = None
+    warning_message: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)
 
 

@@ -2,7 +2,19 @@
 
 这是一个 Windows 桌面软件，用于实时显示 Codex 5 小时窗口、周窗口和可用重置次数。
 
-当前版本：`V0.2`
+当前版本：`V0.3`
+
+## V0.3 新增
+
+- 刷新失败时额度显示 `--`，主窗口和托盘弹窗显示失败原因及累计失败时长。
+- 重置次数刷新失败时保留上一次结果，不影响 5 小时和周额度更新。
+- 自动刷新失败后指数退避，最长 15 分钟；手动刷新仍立即执行。
+- 损坏或非法配置会自动备份并恢复默认值。
+- 切换设置时保留旧结果，新请求成功后再替换，并丢弃过期请求结果。
+- 只允许运行一个实例，重复启动会唤醒已有主窗口。
+- 开机自启动仅对打包后的 EXE 开放。
+- 修复设置面板展开后无法恢复窗口高度的问题。
+- 完善退出清理、依赖锁定、自动化测试和 Windows CI 打包检查。
 
 ## V0.2 新增
 
@@ -51,7 +63,7 @@ https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
 - 托盘图标大数字显示 5 小时剩余额度，托盘悬浮提示显示 5 小时剩余、刷新时间和本周剩余。
 - 托盘弹窗显示 5 小时剩余、5 小时刷新时间、本周剩余和周刷新日期时间。
 - 设置页支持刷新间隔、开机自启动、低额度提醒、系统通知。
-- API Key / Token 通过 Windows Credential Manager 保存，不写入 JSON 配置文件。
+- 只读使用 Codex 登录文件中的访问令牌，不把令牌写入本应用配置文件。
 - 错误和日志展示会自动脱敏。
 
 ## 安装依赖
@@ -62,6 +74,12 @@ https://chatgpt.com/backend-api/wham/rate-limit-reset-credits
 git clone https://github.com/youziiiii/CodexQuotaMonitor.git
 cd CodexQuotaMonitor
 python -m pip install -r requirements.txt
+```
+
+开发、测试和打包依赖使用锁定版本：
+
+```powershell
+python -m pip install -r requirements-dev.txt
 ```
 
 ## 从源码运行
@@ -104,6 +122,9 @@ config.example.json
 
 不要把 API Key 或 Token 写进 JSON 配置文件。
 
+配置文件类型错误、刷新间隔非法或 JSON 损坏时，程序会在同目录生成
+`config.invalid-<时间>.json` 备份，并恢复默认配置。
+
 ## 实时额度
 
 实时接口返回 `used_percent`，程序显示 `100 - used_percent` 作为剩余百分比。5 小时窗口使用 `primary_window`，周窗口使用 `secondary_window`。重置次数来自 `rate_limit_reset_credits.available_count`。
@@ -114,10 +135,12 @@ config.example.json
 python -m pytest
 ```
 
+GitHub Actions 会在 Windows 环境运行测试、打包 EXE，并执行启动冒烟检查。
+
 ## 安全策略
 
 - 只读方式读取本机 Codex `auth.json`。
-- 不上传任何个人数据。
+- 访问令牌只发送给 `chatgpt.com` 的额度接口。
 - 不把 API Key 或 Token 明文写入配置文件。
 - 不读取或展示原始 prompt / 日志正文。
 - 不绕过登录，不抓取私有网页会话。

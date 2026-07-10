@@ -31,7 +31,7 @@ def test_main_window_sets_titlebar_icon():
     assert app is not None
     assert window.windowIcon().isNull() is False
 
-    window.tray.icon.hide()
+    window.shutdown()
     window.close()
 
 

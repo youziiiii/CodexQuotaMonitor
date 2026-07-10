@@ -11,15 +11,13 @@ def test_settings_store_does_not_persist_token_or_api_key(tmp_path):
         refresh_interval_seconds=300,
         provider="realtime",
         notifications_enabled=False,
-        notify_on_refresh=True,
         start_on_login=True,
         low_quota_alerts_enabled=True,
     )
 
-    store.save(settings, transient_secret="sk-test-secret-value")
+    store.save(settings)
     raw = path.read_text(encoding="utf-8")
 
-    assert "sk-test-secret-value" not in raw
     assert "api_key" not in raw.lower()
     assert json.loads(raw)["refresh_interval_seconds"] == 300
     assert store.load().provider == "realtime"
@@ -34,3 +32,25 @@ def test_redact_secret_masks_openai_and_bearer_tokens():
     assert "oai-test-token-value" not in redacted
     assert "sk-proj-" in redacted
     assert "token=" in redacted
+
+
+def test_invalid_config_is_backed_up_and_replaced_with_defaults(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text("[]", encoding="utf-8")
+    store = SettingsStore(path)
+
+    settings = store.load()
+
+    assert settings == AppSettings()
+    assert store.last_invalid_backup_path is not None
+    assert store.last_invalid_backup_path.read_text(encoding="utf-8") == "[]"
+    assert json.loads(path.read_text(encoding="utf-8"))["refresh_interval_seconds"] == 60
+
+
+def test_invalid_refresh_interval_is_rejected_and_restored(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"refresh_interval_seconds": 0}', encoding="utf-8")
+
+    settings = SettingsStore(path).load()
+
+    assert settings.refresh_interval_seconds == 60
