@@ -44,14 +44,16 @@ def test_quota_popup_shows_five_hour_remaining_and_reset_time():
 def test_quota_popup_shows_weekly_remaining_and_weekly_reset_date_time():
     app = QApplication.instance() or QApplication([])
     popup = QuotaPopup()
+    snapshot = _snapshot()
 
-    popup.update_snapshot(_snapshot())
+    popup.update_snapshot(snapshot)
 
     assert app is not None
     assert popup.week_percent_label.text() == "本周剩余 68%"
     assert popup.week_refresh_label.text().startswith("周刷新 ")
     assert "7月" in popup.week_refresh_label.text()
-    assert "02:00" in popup.week_refresh_label.text()
+    expected_clock = snapshot.weekly.reset_time.astimezone().strftime("%H:%M")
+    assert expected_clock in popup.week_refresh_label.text()
     popup.close()
     popup.deleteLater()
 
