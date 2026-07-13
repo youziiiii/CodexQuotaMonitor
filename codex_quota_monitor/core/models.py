@@ -34,12 +34,26 @@ class UsageWindow:
 
 
 @dataclass(frozen=True)
+class ResetCredit:
+    title: str
+    reset_type: str
+    status: str
+    granted_at: datetime | None
+    expires_at: datetime | None
+
+    @property
+    def is_available(self) -> bool:
+        return self.status.casefold() == "available"
+
+
+@dataclass(frozen=True)
 class UsageSnapshot:
     source: UsageSource
     total_used_units: int
     five_hour: UsageWindow
     weekly: UsageWindow
     last_refresh: datetime
+    reset_credits: tuple[ResetCredit, ...] = ()
     error_message: str | None = None
     warning_message: str | None = None
     metadata: dict[str, str] = field(default_factory=dict)

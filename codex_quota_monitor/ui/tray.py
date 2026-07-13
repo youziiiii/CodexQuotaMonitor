@@ -16,14 +16,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from codex_quota_monitor.core.models import UsageSnapshot
+from codex_quota_monitor.core.models import UsageSnapshot, UsageWindow
 
 
 APP_ICON_PATH = Path(__file__).resolve().parents[2] / "assets" / "app_icon.ico"
 
 
-def _format_reset_clock(snapshot: UsageSnapshot) -> str:
-    value = snapshot.five_hour.reset_time
+def _format_reset_clock(value) -> str:
     if value is None:
         return "--:--"
     return value.astimezone().strftime("%H:%M")
@@ -34,6 +33,14 @@ def _format_reset_date_time(value) -> str:
         return "--"
     local = value.astimezone()
     return f"{local.month}月{local.day}日 {local.strftime('%H:%M')}"
+
+
+def _preferred_window(snapshot: UsageSnapshot) -> tuple[str, UsageWindow]:
+    if snapshot.five_hour.percent_remaining is not None:
+        return "5 小时", snapshot.five_hour
+    if snapshot.weekly.percent_remaining is not None:
+        return "1 周", snapshot.weekly
+    return "额度", snapshot.five_hour
 
 
 def _quota_color(percent: int | None) -> QColor:
@@ -159,14 +166,23 @@ class QuotaPopup(QFrame):
         self._apply_styles()
 
     def update_snapshot(self, snapshot: UsageSnapshot) -> None:
-        percent = snapshot.five_hour.percent_remaining
+        window_label, primary_window = _preferred_window(snapshot)
+        percent = primary_window.percent_remaining
+        self.title_label.setText(f"{window_label}剩余")
         self.percent_label.setText("--" if percent is None else f"{percent}%")
         self.progress.setValue(0 if percent is None else percent)
-        self.refresh_label.setText(f"刷新时间 {_format_reset_clock(snapshot)}")
+        if window_label == "1 周":
+            reset_text = _format_reset_date_time(primary_window.reset_time)
+        else:
+            reset_text = _format_reset_clock(primary_window.reset_time)
+        self.refresh_label.setText(f"刷新时间 {reset_text}")
         week_percent = snapshot.weekly.percent_remaining
         week_text = "--" if week_percent is None else f"{week_percent}%"
         self.week_percent_label.setText(f"本周剩余 {week_text}")
         self.week_refresh_label.setText(f"周刷新 {_format_reset_date_time(snapshot.weekly.reset_time)}")
+        show_week_details = window_label == "5 小时" and week_percent is not None
+        self.week_percent_label.setVisible(show_week_details)
+        self.week_refresh_label.setVisible(show_week_details)
         state = "unknown" if percent is None else "normal"
         if percent is not None and percent < 10:
             state = "critical"
@@ -285,16 +301,26 @@ class TrayController(QObject):
         self.popup.update_snapshot(snapshot)
         five_percent = snapshot.five_hour.percent_remaining
         week_percent = snapshot.weekly.percent_remaining
-        self.icon.setIcon(create_quota_icon(five_percent))
-        reset_clock = _format_reset_clock(snapshot)
-        five_text = "--" if five_percent is None else f"{five_percent}%"
-        week_text = "--" if week_percent is None else f"{week_percent}%"
-        self.icon.setToolTip(
-            "Codex 实时额度\n"
-            f"5 小时剩余：{five_text}\n"
-            f"刷新时间：{reset_clock}\n"
-            f"本周剩余：{week_text}"
-        )
+        _, primary_window = _preferred_window(snapshot)
+        self.icon.setIcon(create_quota_icon(primary_window.percent_remaining))
+        tooltip_lines = ["Codex 实时额度"]
+        if five_percent is not None:
+            tooltip_lines.extend(
+                [
+                    f"5 小时剩余：{five_percent}%",
+                    f"5 小时刷新：{_format_reset_clock(snapshot.five_hour.reset_time)}",
+                ]
+            )
+        if week_percent is not None:
+            tooltip_lines.extend(
+                [
+                    f"本周剩余：{week_percent}%",
+                    f"周刷新：{_format_reset_date_time(snapshot.weekly.reset_time)}",
+                ]
+            )
+        if five_percent is None and week_percent is None:
+            tooltip_lines.append("额度：--")
+        self.icon.setToolTip("\n".join(tooltip_lines))
 
     def set_status(self, message: str, error: bool = False) -> None:
         self.popup.set_status(message, error)

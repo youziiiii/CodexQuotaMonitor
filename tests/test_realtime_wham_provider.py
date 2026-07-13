@@ -17,6 +17,25 @@ def test_wham_provider_parses_realtime_usage_and_reset_credits(tmp_path):
         encoding="utf-8",
     )
     requests = []
+    credit_response = {
+        "available_count": 2,
+        "credits": [
+            {
+                "reset_type": "codex_rate_limits",
+                "status": "available",
+                "title": "Full reset",
+                "granted_at": "2026-06-27T00:03:49Z",
+                "expires_at": "2026-07-27T00:03:49Z",
+            },
+            {
+                "reset_type": "codex_rate_limits",
+                "status": "available",
+                "title": "Full reset",
+                "granted_at": "2026-07-01T20:23:21Z",
+                "expires_at": "2026-07-31T20:23:21Z",
+            },
+        ],
+    }
 
     def fake_get(url, headers):
         requests.append((url, headers))
@@ -37,7 +56,7 @@ def test_wham_provider_parses_realtime_usage_and_reset_credits(tmp_path):
                 },
                 "rate_limit_reset_credits": {"available_count": 2},
             }
-        return {"available_count": 2}
+        return credit_response
 
     now = datetime(2026, 7, 7, 10, 0, tzinfo=timezone.utc)
     provider = ChatGPTWhamUsageProvider(auth_path=str(auth), get_json=fake_get)
@@ -49,6 +68,12 @@ def test_wham_provider_parses_realtime_usage_and_reset_credits(tmp_path):
     assert snapshot.five_hour.percent_remaining == 61
     assert snapshot.weekly.percent_remaining == 95
     assert snapshot.metadata["available_resets"] == "2"
+    assert len(snapshot.reset_credits) == 2
+    assert snapshot.reset_credits[0].title == "Full reset"
+    assert snapshot.reset_credits[0].is_available is True
+    assert snapshot.reset_credits[0].expires_at == datetime(
+        2026, 7, 27, 0, 3, 49, tzinfo=timezone.utc
+    )
     assert requests[0][1]["Authorization"] == "Bearer test-access-token"
     assert requests[0][1]["ChatGPT-Account-ID"] == "account-123"
 
@@ -80,7 +105,17 @@ def test_credits_failure_keeps_last_count_and_updates_quota(tmp_path):
             }
         credit_calls += 1
         if credit_calls == 1:
-            return {"available_count": 3}
+            return {
+                "available_count": 3,
+                "credits": [
+                    {
+                        "reset_type": "codex_rate_limits",
+                        "status": "available",
+                        "title": "Full reset",
+                        "expires_at": "2026-07-27T00:03:49Z",
+                    }
+                ],
+            }
         raise TimeoutError("credits timeout")
 
     provider = ChatGPTWhamUsageProvider(auth_path=str(auth), get_json=fake_get)
@@ -89,8 +124,10 @@ def test_credits_failure_keeps_last_count_and_updates_quota(tmp_path):
     second = provider.fetch()
 
     assert first.metadata["available_resets"] == "3"
+    assert len(first.reset_credits) == 1
     assert second.five_hour.percent_remaining == 65
     assert second.metadata["available_resets"] == "3"
+    assert second.reset_credits == first.reset_credits
     assert second.error_message is None
     assert second.warning_message == "重置次数刷新失败：credits timeout"
 
@@ -108,3 +145,54 @@ def test_missing_usage_windows_are_reported_as_unknown_refresh_error(tmp_path):
     assert snapshot.error_message is not None
     assert "缺少有效" in snapshot.error_message
     assert snapshot.five_hour.percent_remaining is None
+
+
+def test_missing_weekly_window_keeps_valid_five_hour_usage(tmp_path):
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"tokens":{"access_token":"test-token"}}', encoding="utf-8")
+
+    def fake_get(url, headers):
+        if url.endswith("/usage"):
+            return {
+                "rate_limit": {
+                    "primary_window": {"used_percent": 18, "reset_at": 1783436220},
+                    "secondary_window": None,
+                },
+                "rate_limit_reset_credits": {"available_count": 2},
+            }
+        return {"available_count": 2}
+
+    snapshot = ChatGPTWhamUsageProvider(auth_path=str(auth), get_json=fake_get).fetch()
+
+    assert snapshot.error_message is None
+    assert snapshot.five_hour.percent_remaining == 82
+    assert snapshot.weekly.percent_remaining is None
+    assert snapshot.metadata["available_resets"] == "2"
+    assert snapshot.warning_message is None
+
+
+def test_primary_window_is_classified_as_weekly_from_its_duration(tmp_path):
+    auth = tmp_path / "auth.json"
+    auth.write_text('{"tokens":{"access_token":"test-token"}}', encoding="utf-8")
+
+    def fake_get(url, headers):
+        if url.endswith("/usage"):
+            return {
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 64,
+                        "limit_window_seconds": 604800,
+                        "reset_at": 1784491318,
+                    },
+                    "secondary_window": None,
+                },
+                "rate_limit_reset_credits": {"available_count": 2},
+            }
+        return {"available_count": 2}
+
+    snapshot = ChatGPTWhamUsageProvider(auth_path=str(auth), get_json=fake_get).fetch()
+
+    assert snapshot.error_message is None
+    assert snapshot.warning_message is None
+    assert snapshot.five_hour.percent_remaining is None
+    assert snapshot.weekly.percent_remaining == 36

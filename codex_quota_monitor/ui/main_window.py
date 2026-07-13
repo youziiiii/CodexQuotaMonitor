@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -27,80 +28,28 @@ from codex_quota_monitor.data_sources.chatgpt_wham import ChatGPTWhamUsageProvid
 from codex_quota_monitor.data_sources.mock_provider import MockUsageProvider
 from codex_quota_monitor.notifications.notifier import Notifier
 from codex_quota_monitor.ui.tray import TrayController, create_app_icon
+from codex_quota_monitor.ui.usage_widgets import ResetCreditsPanel, UsageLimitRow
 
 
-def _fmt_clock(value) -> str:
+def _fmt_clock(value) -> str | None:
     if value is None:
-        return "--:--"
+        return None
     return value.astimezone().strftime("%H:%M")
 
 
-def _fmt_date(value) -> str:
+def _fmt_date(value) -> str | None:
     if value is None:
-        return "--"
+        return None
     local = value.astimezone()
     return f"{local.month}月{local.day}日"
 
 
-class UsageLine(QWidget):
-    def __init__(self, label: str) -> None:
-        super().__init__()
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.label = QLabel(label)
-        self.label.setObjectName("usageLabel")
-        self.percent = QLabel("--")
-        self.percent.setObjectName("usagePercent")
-        self.reset = QLabel("--")
-        self.reset.setObjectName("usageReset")
-        layout.addWidget(self.label, 1)
-        layout.addWidget(self.percent)
-        layout.addWidget(self.reset)
-
-    def update_values(self, percent_remaining: int | None, reset_text: str) -> None:
-        self.percent.setText("--" if percent_remaining is None else f"{percent_remaining}%")
-        self.reset.setText(reset_text)
-        state = "unknown" if percent_remaining is None else "normal"
-        if percent_remaining is not None and percent_remaining < 10:
-            state = "critical"
-        elif percent_remaining is not None and percent_remaining < 20:
-            state = "warning"
-        self.percent.setProperty("quotaState", state)
-        self.percent.style().unpolish(self.percent)
-        self.percent.style().polish(self.percent)
-
-
-class ActionLine(QFrame):
-    def __init__(self, text: str, right_text: str = "", emphasis: bool = False) -> None:
-        super().__init__()
-        self.left_text = text
-        self.right_text = right_text
-        self.setObjectName("actionLine")
-        if emphasis:
-            self.setProperty("emphasis", "true")
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(26, 7, 6, 7)
-        layout.setSpacing(6)
-        self.left_label = QLabel(text)
-        self.left_label.setObjectName("actionLineText")
-        self.right_label = QLabel("")
-        self.right_label.setObjectName("actionLineText")
-        layout.addWidget(self.left_label)
-        layout.addWidget(self.right_label)
-        layout.addStretch(1)
-        self._render()
-
-    def set_right_text(self, value: str) -> None:
-        self.right_text = value
-        self._render()
-
-    def text(self) -> str:
-        suffix = f"  {self.right_label.text()}" if self.right_label.text() else ""
-        return f"{self.left_label.text()}{suffix}"
-
-    def _render(self) -> None:
-        self.left_label.setText(self.left_text)
-        self.right_label.setText(self.right_text.replace("›", "").strip())
+def _parse_reset_count(value: object) -> int | None:
+    try:
+        count = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
 
 
 class RefreshTaskSignals(QObject):
@@ -142,7 +91,7 @@ class MainWindow(QMainWindow):
         self._shutting_down = False
         self.setWindowTitle("Codex 剩余用量")
         self.setWindowIcon(create_app_icon())
-        self.setFixedWidth(445)
+        self.setFixedWidth(500)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self._auto_refresh)
@@ -161,45 +110,52 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root.setObjectName("root")
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-
-        panel = QFrame()
-        panel.setObjectName("quotaPanel")
-        panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(14, 12, 14, 12)
-        panel_layout.setSpacing(10)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(14)
 
         header = QHBoxLayout()
-        title_icon = QLabel("◉")
-        title_icon.setObjectName("titleIcon")
-        title = QLabel("剩余用量")
-        title.setObjectName("title")
-        self.collapse_button = QPushButton("⌄")
-        self.collapse_button.setObjectName("iconButton")
+        header.setSpacing(8)
+        title = QLabel("使用量")
+        title.setObjectName("pageTitle")
+        self.collapse_button = QToolButton()
+        self.collapse_button.setText("⚙︎")
+        self.collapse_button.setObjectName("settingsButton")
+        self.collapse_button.setToolTip("设置")
         self.collapse_button.clicked.connect(self.toggle_settings)
-        header.addWidget(title_icon)
         header.addWidget(title, 1)
         header.addWidget(self.collapse_button)
-        panel_layout.addLayout(header)
+        layout.addLayout(header)
 
-        self.five_line = UsageLine("5 小时")
-        self.week_line = UsageLine("1 周")
-        panel_layout.addWidget(self.five_line)
-        panel_layout.addWidget(self.week_line)
+        limits_panel = QFrame()
+        limits_panel.setObjectName("limitsPanel")
+        limits_layout = QVBoxLayout(limits_panel)
+        limits_layout.setContentsMargins(0, 0, 0, 0)
+        limits_layout.setSpacing(0)
+        self.five_line = UsageLimitRow("5 小时使用限额")
+        self.week_line = UsageLimitRow("每周使用限额")
+        limits_layout.addWidget(self.five_line)
+        limit_separator = QFrame()
+        limit_separator.setObjectName("sectionSeparator")
+        limit_separator.setFrameShape(QFrame.Shape.HLine)
+        limit_separator.setFixedHeight(1)
+        limits_layout.addWidget(limit_separator)
+        limits_layout.addWidget(self.week_line)
+        layout.addWidget(limits_panel)
 
-        self.source_label = QLabel("实时数据 · ChatGPT/Codex 额度")
-        self.source_label.setObjectName("sourceLabel")
-        panel_layout.addWidget(self.source_label)
-
-        self.reset_line = ActionLine("可用重置", "--")
-        panel_layout.addWidget(self.reset_line)
-
-        layout.addWidget(panel)
+        self.reset_panel = ResetCreditsPanel()
+        self.reset_panel.expanded_changed.connect(
+            lambda _: QTimer.singleShot(0, self._resize_to_content)
+        )
+        layout.addWidget(self.reset_panel)
 
         self.settings_panel = self._build_settings_panel()
         layout.addWidget(self.settings_panel)
         self.settings_panel.hide()
+
+        self.source_label = QLabel("实时数据 · ChatGPT/Codex 额度")
+        self.source_label.setObjectName("sourceLabel")
+        self.source_label.hide()
+        layout.addWidget(self.source_label)
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("statusLabel")
@@ -264,16 +220,23 @@ class MainWindow(QMainWindow):
         self._request_refresh(manual=False)
 
     def toggle_settings(self) -> None:
-        visible = not self.settings_panel.isVisible()
+        visible = self.settings_panel.isHidden()
         self.settings_panel.setVisible(visible)
-        self.collapse_button.setText("⌃" if visible else "⌄")
+        self.collapse_button.setToolTip("收起设置" if visible else "设置")
         QTimer.singleShot(0, self._resize_to_content)
 
     def _resize_to_content(self) -> None:
         layout = self.centralWidget().layout()
+        target_height = self.sizeHint().height()
         if layout is not None:
+            layout.invalidate()
             layout.activate()
-        self.resize(self.width(), self.sizeHint().height())
+            target_height = layout.sizeHint().height()
+
+        # Qt can retain the expanded layout's minimum height for one event-loop
+        # cycle after a child is hidden, causing the first shrink to be ignored.
+        self.setMinimumHeight(target_height)
+        self.resize(self.width(), target_height)
 
     def refresh_now(self) -> None:
         self._request_refresh(manual=True)
@@ -347,10 +310,18 @@ class MainWindow(QMainWindow):
         self._start_refresh()
 
     def _render_snapshot(self, snapshot: UsageSnapshot) -> None:
-        self.five_line.update_values(snapshot.five_hour.percent_remaining, _fmt_clock(snapshot.five_hour.reset_time))
-        self.week_line.update_values(snapshot.weekly.percent_remaining, _fmt_date(snapshot.weekly.reset_time))
-        resets = snapshot.metadata.get("available_resets", "--")
-        self.reset_line.set_right_text("--" if resets == "--" else f"{resets} 次")
+        self.five_line.setVisible(True)
+        self.week_line.setVisible(True)
+        self.five_line.update_values(
+            snapshot.five_hour.percent_remaining,
+            _fmt_clock(snapshot.five_hour.reset_time),
+        )
+        self.week_line.update_values(
+            snapshot.weekly.percent_remaining,
+            _fmt_date(snapshot.weekly.reset_time),
+        )
+        resets = _parse_reset_count(snapshot.metadata.get("available_resets"))
+        self.reset_panel.update_credits(snapshot.reset_credits, resets)
         if snapshot.error_message:
             source_prefix = "数据不可用"
         else:
@@ -362,6 +333,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(snapshot.warning_message)
         else:
             self.status_label.setText("")
+        QTimer.singleShot(0, self._resize_to_content)
 
     def _update_failure_status(self) -> None:
         if self._failure_started is None or self._failure_message is None:
@@ -434,27 +406,86 @@ class MainWindow(QMainWindow):
     def _apply_styles(self) -> None:
         self.setStyleSheet(
             """
-            #root { background: #101623; color: #f4f4f5; font-family: "Microsoft YaHei UI", "Segoe UI"; font-size: 10.5pt; }
-            #quotaPanel { background: #2a2a2b; border: 1px solid #3a3a3c; border-radius: 14px; }
-            #title { font-size: 13pt; font-weight: 700; color: #ffffff; }
-            #titleIcon { color: #c8c8c8; font-size: 12pt; }
-            #iconButton { background: transparent; border: none; color: #9ca3af; font-size: 15pt; padding: 2px 6px; }
-            #usageLabel { color: #ffffff; font-size: 12pt; font-weight: 700; padding-left: 26px; }
-            #usagePercent { color: #a1a1aa; min-width: 56px; qproperty-alignment: AlignRight; }
-            #usagePercent[quotaState="warning"] { color: #f6c453; font-weight: 700; }
-            #usagePercent[quotaState="critical"] { color: #ff5c5c; font-weight: 800; }
-            #usagePercent[quotaState="unknown"] { color: #a1a1aa; }
-            #usageReset { color: #a1a1aa; min-width: 58px; qproperty-alignment: AlignRight; }
-            #sourceLabel { color: #737373; padding-left: 2px; }
-            #actionLine { background: transparent; border: none; color: #f3f4f6; font-weight: 600; }
-            #actionLineText { color: #f3f4f6; font-weight: 600; }
-            #actionLine[emphasis="true"] { color: #ffffff; }
-            #settingsPanel { background: #202124; border: 1px solid #34363a; border-radius: 10px; color: #f4f4f5; }
-            #statusLabel { color: #8f96a3; padding: 0 4px; }
-            QLineEdit, QComboBox, QSpinBox { background: #111318; color: #f4f4f5; border: 1px solid #3b3f46; border-radius: 6px; padding: 5px; }
+            #root {
+                background: #202020;
+                color: #f5f5f5;
+                font-family: "Microsoft YaHei UI", "Segoe UI";
+                font-size: 10.5pt;
+            }
+            #pageTitle { color: #ffffff; font-size: 18pt; font-weight: 700; }
+            #settingsButton {
+                background: transparent;
+                border: none;
+                color: #b8b8b8;
+                font-family: "Segoe UI Symbol";
+                font-size: 14pt;
+                padding: 4px;
+            }
+            #settingsButton:hover { color: #ffffff; background: #303030; border-radius: 6px; }
+            #limitsPanel, #resetPanel, #settingsPanel {
+                background: #272727;
+                border: 1px solid #3b3b3b;
+                border-radius: 8px;
+                color: #f5f5f5;
+            }
+            #limitTitle, #resetSectionTitle, #resetCreditTitle {
+                color: #f7f7f7;
+                font-weight: 700;
+            }
+            #limitReset, #resetCreditExpiry { color: #a7a7a7; }
+            #limitPercent {
+                color: #bdbdbd;
+                min-width: 72px;
+                font-weight: 500;
+            }
+            #limitPercent[quotaState="warning"] { color: #f6c453; font-weight: 700; }
+            #limitPercent[quotaState="critical"] { color: #ff6868; font-weight: 700; }
+            #limitProgress {
+                background: #434343;
+                border: none;
+                border-radius: 4px;
+            }
+            #limitProgress::chunk { background: #f1f1f1; border-radius: 4px; }
+            #limitProgress[quotaState="warning"]::chunk { background: #f6c453; }
+            #limitProgress[quotaState="critical"]::chunk { background: #ff6868; }
+            #sectionSeparator { background: #3a3a3a; border: none; }
+            #resetBadge {
+                background: #087a36;
+                color: #e4ffed;
+                border-radius: 10px;
+                padding: 3px 10px;
+                font-weight: 700;
+            }
+            #resetBadge[resetState="empty"], #resetBadge[resetState="unknown"] {
+                background: #414141;
+                color: #c8c8c8;
+            }
+            #resetToggleButton {
+                background: transparent;
+                border: none;
+                color: #bdbdbd;
+                padding: 3px;
+            }
+            #resetToggleButton:hover { color: #ffffff; background: #333333; border-radius: 5px; }
+            #resetEmptyLabel { color: #8e8e8e; padding: 16px; }
+            #sourceLabel { color: #777777; padding: 0 3px; }
+            #statusLabel { color: #9ca3af; padding: 0 3px; }
+            QLineEdit, QComboBox, QSpinBox {
+                background: #171717;
+                color: #f4f4f5;
+                border: 1px solid #454545;
+                border-radius: 6px;
+                padding: 6px;
+            }
             QCheckBox { color: #e5e7eb; }
-            QPushButton { background: #34363a; color: #f4f4f5; border: 1px solid #4b5563; border-radius: 7px; padding: 7px 10px; }
-            QPushButton:hover { background: #40434a; }
+            QPushButton {
+                background: #353535;
+                color: #f4f4f5;
+                border: 1px solid #4a4a4a;
+                border-radius: 7px;
+                padding: 7px 10px;
+            }
+            QPushButton:hover { background: #414141; }
             """
         )
 

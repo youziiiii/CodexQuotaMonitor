@@ -26,6 +26,18 @@ def _snapshot() -> UsageSnapshot:
     )
 
 
+def _weekly_only_snapshot() -> UsageSnapshot:
+    now = datetime(2026, 7, 13, 18, 0, tzinfo=timezone.utc)
+    return UsageSnapshot(
+        source=UsageSource("ChatGPT Codex 实时额度", "chatgpt_realtime", False, "test"),
+        total_used_units=64,
+        five_hour=UsageWindow("5 小时", 0, 0, 0, None),
+        weekly=UsageWindow("1 周", 64, 100, 36, now),
+        last_refresh=now,
+        metadata={"available_resets": "2"},
+    )
+
+
 def test_quota_popup_shows_five_hour_remaining_and_reset_time():
     app = QApplication.instance() or QApplication([])
     popup = QuotaPopup()
@@ -54,6 +66,22 @@ def test_quota_popup_shows_weekly_remaining_and_weekly_reset_date_time():
     assert "7月" in popup.week_refresh_label.text()
     expected_clock = snapshot.weekly.reset_time.astimezone().strftime("%H:%M")
     assert expected_clock in popup.week_refresh_label.text()
+    popup.close()
+    popup.deleteLater()
+
+
+def test_quota_popup_uses_weekly_as_primary_when_five_hour_is_unavailable():
+    app = QApplication.instance() or QApplication([])
+    popup = QuotaPopup()
+
+    popup.update_snapshot(_weekly_only_snapshot())
+
+    assert app is not None
+    assert popup.title_label.text() == "1 周剩余"
+    assert popup.percent_label.text() == "36%"
+    assert popup.week_percent_label.isHidden()
+    assert popup.week_refresh_label.isHidden()
+    assert "--" not in popup.refresh_label.text()
     popup.close()
     popup.deleteLater()
 
@@ -132,6 +160,22 @@ def test_tray_tooltip_uses_percentages_for_realtime_windows():
     assert app is not None
     assert "5 小时剩余：61%" in tray.icon.toolTip()
     assert "本周剩余：68%" in tray.icon.toolTip()
+    tray.shutdown()
+
+
+def test_tray_tooltip_uses_weekly_quota_when_it_is_the_only_window():
+    app = QApplication.instance() or QApplication([])
+
+    class Window(QWidget):
+        def refresh_now(self):
+            pass
+
+    tray = TrayController(Window())
+    tray.update_snapshot(_weekly_only_snapshot())
+
+    assert app is not None
+    assert "5 小时" not in tray.icon.toolTip()
+    assert "本周剩余：36%" in tray.icon.toolTip()
     tray.shutdown()
 
 
